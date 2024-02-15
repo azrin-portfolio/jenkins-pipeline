@@ -1,0 +1,38 @@
+#!/usr/bin/env groovy
+
+pipeline {
+    agent any
+
+    environment {
+        GIT_URL_TEST_JENKINS = "git@github.com:cscareerkaizen/test-jenkins.git" // NOTE: change to your own
+        GIT_URL_TEST_JENKINS_BITBUCKET = "git@bitbucket.org:cscareerkaizen/test-jenkins-bitbucket.git" // NOTE: change to your own
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES') // timeout plugin
+        retry(1)
+        timestamps()
+    }
+
+    stages {
+        stage("Clone Private Repo") {
+            steps {
+                withCredentials([ // need ssh key for private Bitbucket
+                                sshUserPrivateKey(credentialsId: "bitbucket-private-ssh-key", // NOTE: change to your own
+                                keyFileVariable: 'bitbucket-private-ssh-key')
+                                ]) {
+
+                    // given that this jenkinsfile is at github repo, we want to pull from bitbucket repo
+                    git branch: 'master',
+                        credentialsId: 'bitbucket-private-ssh-key',
+                        url: "${GIT_URL_TEST_JENKINS_BITBUCKET}"
+
+                        sh '''
+                            pwd
+                            ls -al
+                        '''
+                  } // withCredentials
+              } // steps
+          }  // stage   
+    } // stages
+} // pipeline

@@ -1,0 +1,106 @@
+#!/usr/bin/env groovy
+
+pipeline {
+    agent any
+
+    environment {
+        GIT_URL_TEST_JENKINS = "git@github.com:cscareerkaizen/test-jenkins.git"
+        GIT_URL_TEST_JENKINS_BITBUCKET = "git@bitbucket.org:cscareerkaizen/test-jenkins-bitbucket.git"
+
+        ECR = "266981300450.dkr.ecr.ap-southeast-1.amazonaws.com" // set to your own ECR URI
+        AWS_REGION = "ap-southeast-1" // set to your AWS region
+        IMAGE = "ecr-voting-app"
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES') // timeout plugin
+        retry(1)
+        timestamps() // Prepend all console output generated during this stage with the time at which the line was emitted
+    }
+
+    triggers {
+        bitbucketPush()
+    }
+
+    stages {
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                    docker version
+                    pwd
+                    cd example-voting-app/result
+                    ls -al
+
+                    echo "Building docker image..."
+
+                    # get first 20 chars because k8s name should be no more than 63 characters
+                    # prepend shortened branch name to image tag as later stage can only fetch shortened branch name from git tag
+                    # NOTE: BRANCH_NAME is only available if using multibranch pipeline
+                    short_branch_name=$(echo ${BRANCH_NAME} | cut -c1-20)
+                    echo "short_branch_name = ${short_branch_name}"
+
+                    DOCKER_BUILDKIT=1 docker build \
+                        --tag "\${ECR}/\${IMAGE}:${short_branch_name}_0.1.$BUILD_NUMBER" \
+                        --progress plain \
+                        --file Dockerfile .
+
+                    echo "Listing docker images after finishing 'docker build'..."
+                    docker images
+                '''
+            } // steps
+            post {
+              always {
+                  // notify bitbucket
+                  bitbucketStatusNotify(buildState: 'INPROGRESS')
+              }
+            } // post
+        } // stage 
+
+        stage('Push Docker Image to ECR') {
+            steps {
+                // can't use docker pipeline plugin's docker.withRegistry() for push as we get AWS temp creds from IAM instance profile
+                sh'''
+                    # check identity
+                    aws sts get-caller-identity
+
+                    # hide creds from console
+                    set +x
+                    set -o verbose
+
+                    # get ecr password
+                    ecr_password=$(aws ecr get-login-password --region ${AWS_REGION})
+
+                    # login to ecr repo using docker login
+                    echo ${ecr_password} | docker login \
+                                                      --username AWS \
+                                                      --password-stdin \
+                                                      ${ECR}
+
+                    # enbale back
+                    set -o xtrace
+                    set +v
+
+                    docker images
+
+                    # get first 20 chars because k8s name should be no more than 63 characters
+                    # prepend shortened branch name to image tag as later stage can only fetch shortened branch name from git tag
+                    short_branch_name=$(echo ${BRANCH_NAME} | cut -c1-20)
+
+                    # push
+                    docker push "${ECR}/${IMAGE}:${short_branch_name}_0.1.$BUILD_NUMBER"
+                '''
+            } // steps
+        } // strage
+    } // stages
+
+    post {
+        success {
+            // notify bitbucket. Ref: https://github.com/jenkinsci/bitbucket-build-status-notifier-plugin
+            bitbucketStatusNotify(buildState: 'SUCCESSFUL')
+        }
+        failure {
+            bitbucketStatusNotify(buildState: 'FAILED')
+        }
+    } // post
+
+} // pipeline
